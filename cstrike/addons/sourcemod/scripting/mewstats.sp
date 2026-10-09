@@ -200,6 +200,8 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
         return Plugin_Continue;
     }
 
+    g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
+
     if (g_ThrowInfo[client].m_iTicks != _MEWSTATS_TICK_UNKNOWN) // in the process of throwing
     {
         if (g_ThrowInfo[client].m_iTicks > _MEWSTATS_MAX_THROWTICKS)
