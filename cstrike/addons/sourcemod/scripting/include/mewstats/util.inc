@@ -58,6 +58,24 @@ stock float Mewstats_TruncateFloat(float val, int digits)
     return float(RoundToZero(val * factor)) / factor + sign * 0.0001;
 }
 
+stock float Mewstats_RoundToDigit(float val, int digits)
+{
+    if (val == 0.0)
+    {
+        return 0.0;
+    }
+
+    if (digits <= 0)
+    {
+        return float(RoundToNearest(val));
+    }
+
+    float sign = float(Mewstats_FloatSign(val));
+    float factor = Pow(10.0, float(digits));
+
+    return float(RoundToNearest(val * factor)) / factor + sign * (0.001 / factor);
+}
+
 stock float Mewstats_NormalizeVector(const float vec[3], float out[3])
 {
     float length = SquareRoot(vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]);

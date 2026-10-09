@@ -40,7 +40,10 @@
 #pragma newdecls required
 #pragma semicolon 1
 
+#define _MEWSTATS_MAX_THROWTICKS 20
 #define _MEWSTATS_TICK_UNKNOWN -1
+#define _MEWSTATS_INVALID_ENTITY -1
+#define _MEWSTATS_INVALID_DEVIATION 1337.0
 #define _MEWSTATS_MLS_STORE_LIMIT 12
 
 public Plugin myinfo = {
@@ -118,7 +121,18 @@ char g_szChatSeparatorModes[MEWSTATS_COOKIE_VALUE_CHAT_SEPARATOR_COUNT][MEWSTATS
 char g_szChatSeparatorValues[MEWSTATS_COOKIE_VALUE_CHAT_SEPARATOR_COUNT][MEWSTATS_CHAT_SEPARATOR_SIZE];
 char g_szChatSoundModes[MEWSTATS_COOKIE_VALUE_CHAT_SOUND_COUNT][MEWSTATS_MENU_ITEM_SIZE];
 
-int g_iThrowJumpTick[MAXPLAYERS + 1];
+enum struct ThrowInfo
+{
+    int m_iFlags;
+    int m_iTicks;
+    bool m_bJumpedBeforeSpawned; // false = SpawnedBeforeJumped
+    float m_fVel;
+    float m_fPitch;
+    float m_fDeviation;
+}
+ThrowInfo g_ThrowInfo[MAXPLAYERS + 1];
+int g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
+
 int g_iSkyJumpTick[MAXPLAYERS + 1];
 int g_iFlashHitTick[MAXPLAYERS + 1];
 int g_iMlsFlashCount[MAXPLAYERS + 1];
@@ -162,7 +176,7 @@ public void OnPluginStart()
 
 public void OnClientPutInServer(int client)
 {
-    g_iThrowJumpTick[client] = _MEWSTATS_TICK_UNKNOWN;
+    g_ThrowInfo[client].m_iTicks = _MEWSTATS_TICK_UNKNOWN;
     g_iSkyJumpTick[client] = _MEWSTATS_TICK_UNKNOWN;
     g_iFlashHitTick[client] = _MEWSTATS_TICK_UNKNOWN;
     g_iMlsFlashCount[client] = 0;
@@ -171,6 +185,7 @@ public void OnClientPutInServer(int client)
     Mewstats_InitStateVars(client);
 
     SDKHook(client, SDKHook_StartTouch, Hook_StartTouch);
+    SDKHook(client, SDKHook_PostThinkPost, Hook_PostThinkPost);
 }
 
 public void OnClientCookiesCached(int client)
@@ -185,11 +200,21 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
         return Plugin_Continue;
     }
 
-    int flags = GetEntProp(client, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
-    if (Mewstats_IsFlag(flags, FL_ONGROUND))
+    if (g_ThrowInfo[client].m_iTicks != _MEWSTATS_TICK_UNKNOWN) // in the process of throwing
     {
-        g_iThrowJumpTick[client] = _MEWSTATS_TICK_UNKNOWN;
+        if (g_ThrowInfo[client].m_iTicks > _MEWSTATS_MAX_THROWTICKS)
+        {
+            g_ThrowInfo[client].m_iTicks = _MEWSTATS_TICK_UNKNOWN; // mark nj beforehand
+            if (!g_ThrowInfo[client].m_bJumpedBeforeSpawned)
+            {
+                Mewstats_PrintThrowStats2(client); // nj
+            }
+        }
+        else
+             g_ThrowInfo[client].m_iTicks++;
     }
+
+    int flags = GetEntProp(client, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
 
     if (g_iSkyJumpTick[client] != _MEWSTATS_TICK_UNKNOWN)
     {
@@ -414,7 +439,7 @@ static void Mewstats_PrintSkyStats(int client, float strength)
         }
         else if (g_iValuePrecision[client] == MEWSTATS_COOKIE_VALUE_VALUE_PRECISION_DOT_ONE)
         {
-            FormatEx(szStrength, sizeof(szStrength), "%.1f", Mewstats_TruncateFloat(strength, 1));
+            FormatEx(szStrength, sizeof(szStrength), "%.1f", Mewstats_RoundToDigit(strength, 1));
         }
     }
     else if (g_iSkyPrecision[client] == MEWSTATS_COOKIE_VALUE_SKY_PRECISION_DOT_ZERO)
@@ -423,11 +448,11 @@ static void Mewstats_PrintSkyStats(int client, float strength)
     }
     else if (g_iSkyPrecision[client] == MEWSTATS_COOKIE_VALUE_SKY_PRECISION_DOT_ONE)
     {
-        FormatEx(szStrength, sizeof(szStrength), "%.1f", Mewstats_TruncateFloat(strength, 1));
+        FormatEx(szStrength, sizeof(szStrength), "%.1f", Mewstats_RoundToDigit(strength, 1));
     }
     else if (g_iSkyPrecision[client] == MEWSTATS_COOKIE_VALUE_SKY_PRECISION_DOT_TWO)
     {
-        FormatEx(szStrength, sizeof(szStrength), "%.2f", Mewstats_TruncateFloat(strength, 2));
+        FormatEx(szStrength, sizeof(szStrength), "%.2f", Mewstats_RoundToDigit(strength, 2));
     }
     if (szStrength[0] == '\0')
     {
@@ -648,50 +673,66 @@ public void OnEntityCreated(int entity, const char[] szClassname)
     {
         return;
     }
-    if (!StrEqual(szClassname, MEWSTATS_CLASSNAME_PROJECTILE_FLASHBANG))
+    if (StrEqual(szClassname, MEWSTATS_CLASSNAME_PROJECTILE_FLASHBANG))
     {
+        g_entLastGrenade = entity;
         return;
     }
-
-    SDKHook(entity, SDKHook_SpawnPost, Hook_SpawnPost);
 }
 
-static void Hook_SpawnPost(int entity)
+static void Hook_PostThinkPost(int thrower)
 {
-    if (!IsValidEntity(entity))
+    if (g_entLastGrenade == _MEWSTATS_INVALID_ENTITY) return;
+
+    g_ThrowInfo[thrower].m_iFlags = GetEntProp(thrower, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
+
+    float vec[3];
+    GetEntPropVector(thrower, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY,  vec);
+    g_ThrowInfo[thrower].m_fVel = SquareRoot(vec[0]*vec[0] + vec[1]*vec[1]) + 0.0001;
+
+    GetClientEyeAngles(thrower, vec);
+    g_ThrowInfo[thrower].m_fPitch = -vec[0];
+    
+    g_ThrowInfo[thrower].m_fDeviation = _MEWSTATS_INVALID_DEVIATION;
+    if (GetFeatureStatus(FeatureType_Native, "Timer_GetPartner") == FeatureStatus_Available)
     {
-        return;
+        int partner = Timer_GetPartner(thrower);
+        if (!Mewstats_IsAliveClientInGame(partner))
+        {
+            float flashVel[3], flashPos[3], partnerPos[3], flashToPartner[3];
+            GetEntPropVector(g_entLastGrenade, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, flashPos);
+            GetEntPropVector(g_entLastGrenade, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, flashVel);
+
+            GetClientAbsOrigin(partner, partnerPos);
+            SubtractVectors(partnerPos, flashPos, flashToPartner);
+
+            g_ThrowInfo[thrower].m_fDeviation = Mewstats_RelativeDeviation(flashVel, flashToPartner);
+        }
     }
 
-    RequestFrame(Frame_FlashbangSpawn, EntIndexToEntRef(entity));
+    // already jumped
+    if (g_ThrowInfo[thrower].m_iTicks != _MEWSTATS_TICK_UNKNOWN && g_ThrowInfo[thrower].m_bJumpedBeforeSpawned)
+    {
+        Mewstats_PrintThrowStats2(thrower);
+        g_ThrowInfo[thrower].m_iTicks = _MEWSTATS_TICK_UNKNOWN;
+    }
+    else
+    {
+        g_ThrowInfo[thrower].m_iTicks = 0; // begin counting
+        g_ThrowInfo[thrower].m_bJumpedBeforeSpawned = false;
+    }
+
+    g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
 }
 
-static void Frame_FlashbangSpawn(int ref)
+static void Mewstats_PrintThrowStats2(int thrower)
 {
-    int entity = EntRefToEntIndex(ref);
-    if (entity == INVALID_ENT_REFERENCE)
-    {
-        return;
-    }
-    if (!IsValidEntity(entity))
-    {
-        return;
-    }
-
-    int thrower = GetEntPropEnt(entity, Prop_Data, MEWSTATS_PROP_M_HTHROWER);
     if (!Mewstats_IsAlivePlayerInGame(thrower))
     {
         return;
     }
 
-    int flags = GetEntProp(thrower, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
-    MoveType movetype = GetEntityMoveType(thrower);
-    if (Mewstats_IsFlag(flags, FL_ONGROUND) || movetype != MOVETYPE_WALK)
-    {
-        g_iThrowJumpTick[thrower] = _MEWSTATS_TICK_UNKNOWN;
-    }
-
-    Mewstats_PrintThrowStats(false, thrower, thrower, entity);
+    Mewstats_PrintThrowStats(false, thrower, thrower);
     for (int client = 1; client <= MaxClients; ++client)
     {
         if (!Mewstats_IsPlayerInGame(client))
@@ -715,7 +756,7 @@ static void Frame_FlashbangSpawn(int ref)
             continue;
         }
 
-        Mewstats_PrintThrowStats(false, client, thrower, entity);
+        Mewstats_PrintThrowStats(false, client, thrower);
     }
 
     if (GetFeatureStatus(FeatureType_Native, "Timer_GetPartner") == FeatureStatus_Available)
@@ -725,7 +766,7 @@ static void Frame_FlashbangSpawn(int ref)
         {
             if (g_iPartnerStats[partner] == MEWSTATS_COOKIE_VALUE_PARTNER_STATS_TRUE)
             {
-                Mewstats_PrintThrowStats(true, partner, thrower, entity);
+                Mewstats_PrintThrowStats(true, partner, thrower);
             }
 
             for (int client = 1; client <= MaxClients; ++client)
@@ -753,20 +794,16 @@ static void Frame_FlashbangSpawn(int ref)
 
                 if (g_iPartnerStats[client] == MEWSTATS_COOKIE_VALUE_PARTNER_STATS_TRUE)
                 {
-                    Mewstats_PrintThrowStats(true, client, thrower, entity);
+                    Mewstats_PrintThrowStats(true, client, thrower);
                 }
             }
         }
     }
 }
 
-static void Mewstats_PrintThrowStats(bool bPartner, int client, int thrower, int entity)
+static void Mewstats_PrintThrowStats(bool bPartner, int client, int thrower)
 {
     if (!Mewstats_IsClientInGame(client) || !Mewstats_IsClientInGame(thrower))
-    {
-        return;
-    }
-    if (!IsValidEntity(entity))
     {
         return;
     }
@@ -785,7 +822,7 @@ static void Mewstats_PrintThrowStats(bool bPartner, int client, int thrower, int
     Mewstats_FormatThrowTime(client, thrower, szThrowTime, sizeof(szThrowTime));
 
     char szThrowDeviation[_MEWSTATS_ELEMENT_SIZE] = "";
-    Mewstats_FormatThrowDeviation(client, thrower, entity, szThrowDeviation, sizeof(szThrowDeviation));
+    Mewstats_FormatThrowDeviation(client, thrower, szThrowDeviation, sizeof(szThrowDeviation));
 
     char szThrowStatus[_MEWSTATS_ELEMENT_SIZE] = "";
     Mewstats_FormatThrowStatus(client, thrower, szThrowStatus, sizeof(szThrowStatus));
@@ -853,8 +890,7 @@ static void Mewstats_FormatThrowSpeed(int client, int thrower, char[] buff, int 
         return;
     }
 
-    int flags = GetEntProp(thrower, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
-    bool ducking = Mewstats_IsFlag(flags, FL_DUCKING);
+    bool ducking = Mewstats_IsFlag(g_ThrowInfo[thrower].m_iFlags, FL_DUCKING);
 
     char szPhrase[MEWSTATS_MESSAGE_KEY_SIZE] = "";
     if (g_iShortNames[client] == MEWSTATS_COOKIE_VALUE_SHORT_NAMES_TRUE)
@@ -898,11 +934,7 @@ static void Mewstats_FormatThrowSpeed(int client, int thrower, char[] buff, int 
         return;
     }
 
-    float velocity[3];
-    GetEntPropVector(thrower, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, velocity);
-
-    velocity[2] = 0.0;
-    float speed = GetVectorLength(velocity, false) + 0.0001;
+    float speed = g_ThrowInfo[thrower].m_fVel;
 
     char szBaseColor[MEWSTATS_THEME_COLOR_SIZE] = "";
     strcopy(szBaseColor, sizeof(szBaseColor), g_szChatThemeColors[g_iChatTheme[client]][MEWSTATS_THEME_COLOR_INDEX_BASE]);
@@ -942,7 +974,7 @@ static void Mewstats_FormatThrowSpeed(int client, int thrower, char[] buff, int 
     }
     else if (g_iValuePrecision[client] == MEWSTATS_COOKIE_VALUE_VALUE_PRECISION_DOT_ONE)
     {
-        FormatEx(szSpeed, sizeof(szSpeed), "%.1f", Mewstats_TruncateFloat(speed, 1));
+        FormatEx(szSpeed, sizeof(szSpeed), "%.1f", Mewstats_RoundToDigit(speed, 1));
     }
     if (szSpeed[0] == '\0')
     {
@@ -977,10 +1009,7 @@ static void Mewstats_FormatThrowAngle(int client, int thrower, char[] buff, int 
         return;
     }
 
-    float angles[3];
-    GetClientEyeAngles(thrower, angles);
-
-    float angle = -1.0 * angles[0];
+    float angle = g_ThrowInfo[thrower].m_fPitch;
 
     char szBaseColor[MEWSTATS_THEME_COLOR_SIZE] = "";
     strcopy(szBaseColor, sizeof(szBaseColor), g_szChatThemeColors[g_iChatTheme[client]][MEWSTATS_THEME_COLOR_INDEX_BASE]);
@@ -1003,7 +1032,7 @@ static void Mewstats_FormatThrowAngle(int client, int thrower, char[] buff, int 
     }
     else if (g_iValuePrecision[client] == MEWSTATS_COOKIE_VALUE_VALUE_PRECISION_DOT_ONE)
     {
-        FormatEx(szAngle, sizeof(szAngle), "%.1f", Mewstats_TruncateFloat(angle, 1));
+        FormatEx(szAngle, sizeof(szAngle), "%.1f", Mewstats_RoundToDigit(angle, 1));
     }
     if (szAngle[0] == '\0')
     {
@@ -1038,16 +1067,16 @@ static void Mewstats_FormatThrowTime(int client, int thrower, char[] buff, int s
         return;
     }
 
-    int tick = 0;
-    if (g_iThrowJumpTick[thrower] != _MEWSTATS_TICK_UNKNOWN)
+    if (g_ThrowInfo[thrower].m_iTicks == _MEWSTATS_TICK_UNKNOWN)
     {
-        tick = GetEntProp(thrower, Prop_Send, MEWSTATS_PROP_M_NTICKBASE) - g_iThrowJumpTick[thrower] - 2;
-        if (tick < 0)
-        {
-            tick = 0;
-        }
+        return; // nj
     }
-    float time = tick * GetTickInterval() + 0.0001;
+
+    int tick = g_ThrowInfo[thrower].m_iTicks; // positive = late, negative = early
+    if (g_ThrowInfo[thrower].m_bJumpedBeforeSpawned) 
+        tick = -tick;
+
+    float time = tick * GetTickInterval();
 
     char szBaseColor[MEWSTATS_THEME_COLOR_SIZE] = "";
     strcopy(szBaseColor, sizeof(szBaseColor), g_szChatThemeColors[g_iChatTheme[client]][MEWSTATS_THEME_COLOR_INDEX_BASE]);
@@ -1060,7 +1089,10 @@ static void Mewstats_FormatThrowTime(int client, int thrower, char[] buff, int s
     if (g_iColorValues[client] == MEWSTATS_COOKIE_VALUE_COLOR_VALUES_TRUE)
     {
         int color[3];
-        Mewstats_TransColor(100.0 - time / 0.1 * 100.0, 50.0, color);
+        if (tick > 0)
+            color[0] = 255; // red for late throws
+        else
+            Mewstats_TransColor(100.0 + time / 0.06 * 100.0, 50.0, color); // 0.00 green, 0.03 yellow, 0.06 red
 
         FormatEx(szAccentColor, sizeof(szAccentColor), "\x07%02X%02X%02X", color[0], color[1], color[2]);
     }
@@ -1074,7 +1106,7 @@ static void Mewstats_FormatThrowTime(int client, int thrower, char[] buff, int s
     }
 
     char szTime[32] = "";
-    FormatEx(szTime, sizeof(szTime), "%.2f", Mewstats_TruncateFloat(time, 2));
+    FormatEx(szTime, sizeof(szTime), "%s%.2f", tick > 0 ? "+" : "", Mewstats_RoundToDigit(time, 2));
     if (szTime[0] == '\0')
     {
         return;
@@ -1083,9 +1115,9 @@ static void Mewstats_FormatThrowTime(int client, int thrower, char[] buff, int s
     FormatEx(buff, size, "%T", szPhrase, client, szBaseColor, szAccentColor, szTime);
 }
 
-static void Mewstats_FormatThrowDeviation(int client, int thrower, int entity, char[] buff, int size)
+static void Mewstats_FormatThrowDeviation(int client, int thrower, char[] buff, int size)
 {
-    if (GetFeatureStatus(FeatureType_Native, "Timer_GetPartner") != FeatureStatus_Available)
+    if (g_ThrowInfo[thrower].m_fDeviation == _MEWSTATS_INVALID_DEVIATION)
     {
         return;
     }
@@ -1093,17 +1125,7 @@ static void Mewstats_FormatThrowDeviation(int client, int thrower, int entity, c
     {
         return;
     }
-    if (!IsValidEntity(entity))
-    {
-        return;
-    }
     if (g_iThrowDeviation[client] != MEWSTATS_COOKIE_VALUE_THROW_DEVIATION_TRUE)
-    {
-        return;
-    }
-
-    int partner = Timer_GetPartner(thrower);
-    if (!Mewstats_IsAliveClientInGame(partner))
     {
         return;
     }
@@ -1122,39 +1144,7 @@ static void Mewstats_FormatThrowDeviation(int client, int thrower, int entity, c
         return;
     }
 
-    float flashbangVelocity[3];
-    GetEntPropVector(entity, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, flashbangVelocity);
-    flashbangVelocity[2] = 0.0;
-
-    float flashbangPosition[3];
-    GetEntPropVector(entity, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, flashbangPosition);
-
-    float partnerPosition[3];
-    GetEntPropVector(partner, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, partnerPosition);
-
-    float partnerDirection[3];
-    partnerDirection[0] = partnerPosition[0] - flashbangPosition[0];
-    partnerDirection[1] = partnerPosition[1] - flashbangPosition[1];
-    partnerDirection[2] = 0.0;
-
-    // float partnerVelocity[3];
-    // GetEntPropVector(partner, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, partnerVelocity);
-    // partnerVelocity[2] = 0.0;
-
-    // float speed = GetVectorLength(partnerVelocity, false);
-    // if (speed <= 0.2)
-    // {
-    //     float flashbangPosition[3];
-    //     GetEntPropVector(entity, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, flashbangPosition);
-
-    //     float partnerPosition[3];
-    //     GetClientAbsOrigin(partner, partnerPosition);
-
-    //     partnerVelocity[0] = partnerPosition[0] - flashbangPosition[0];
-    //     partnerVelocity[1] = partnerPosition[1] - flashbangPosition[1];
-    // }
-
-    float angle = Mewstats_RelativeDeviation(flashbangVelocity, partnerDirection);
+    float angle = g_ThrowInfo[thrower].m_fDeviation;
 
     char szBaseColor[MEWSTATS_THEME_COLOR_SIZE] = "";
     strcopy(szBaseColor, sizeof(szBaseColor), g_szChatThemeColors[g_iChatTheme[client]][MEWSTATS_THEME_COLOR_INDEX_BASE]);
@@ -1177,7 +1167,7 @@ static void Mewstats_FormatThrowDeviation(int client, int thrower, int entity, c
     }
     else if (g_iValuePrecision[client] == MEWSTATS_COOKIE_VALUE_VALUE_PRECISION_DOT_ONE)
     {
-        FormatEx(szAngle, sizeof(szAngle), "%.1f", Mewstats_TruncateFloat(angle, 1));
+        FormatEx(szAngle, sizeof(szAngle), "%.1f", Mewstats_RoundToDigit(angle, 1));
     }
     if (szAngle[0] == '\0')
     {
@@ -1197,7 +1187,7 @@ static void Mewstats_FormatThrowStatus(int client, int thrower, char[] buff, int
     {
         return;
     }
-    if (g_iThrowJumpTick[thrower] != _MEWSTATS_TICK_UNKNOWN)
+    if (g_ThrowInfo[thrower].m_iTicks != _MEWSTATS_TICK_UNKNOWN) // wasn't throwing nj
     {
         return;
     }
@@ -1239,7 +1229,17 @@ static void Event_PlayerJump(Event event, const char[] name, bool bNoBroadcast)
         return;
     }
 
-    g_iThrowJumpTick[client] = GetEntProp(client, Prop_Send, MEWSTATS_PROP_M_NTICKBASE);
+    // already spawned flashbang
+    if (g_ThrowInfo[client].m_iTicks != _MEWSTATS_TICK_UNKNOWN && !g_ThrowInfo[client].m_bJumpedBeforeSpawned)
+    {
+        Mewstats_PrintThrowStats2(client);
+        g_ThrowInfo[client].m_iTicks = _MEWSTATS_TICK_UNKNOWN;
+    }
+    else
+    {
+        g_ThrowInfo[client].m_iTicks = 0; // begin counting
+        g_ThrowInfo[client].m_bJumpedBeforeSpawned = true;
+    }
 }
 
 static Action Command_Stats(int client, int argc)
