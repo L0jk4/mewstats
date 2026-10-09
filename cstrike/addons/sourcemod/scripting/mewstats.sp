@@ -1191,6 +1191,10 @@ static void Mewstats_FormatThrowStatus(int client, int thrower, char[] buff, int
     {
         return;
     }
+    if (!Mewstats_IsFlag(g_ThrowInfo[thrower].m_iFlags, FL_ONGROUND))
+    {
+        return;
+    }
 
     char szPhrase[MEWSTATS_MESSAGE_KEY_SIZE] = "";
     if (g_iShortNames[client] == MEWSTATS_COOKIE_VALUE_SHORT_NAMES_TRUE)
