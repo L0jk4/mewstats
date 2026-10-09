@@ -42,7 +42,6 @@
 
 #define _MEWSTATS_MAX_THROWTICKS 20
 #define _MEWSTATS_TICK_UNKNOWN -1
-#define _MEWSTATS_INVALID_ENTITY -1
 #define _MEWSTATS_INVALID_DEVIATION 1337.0
 #define _MEWSTATS_MLS_STORE_LIMIT 12
 
@@ -131,7 +130,7 @@ enum struct ThrowInfo
     float m_fDeviation;
 }
 ThrowInfo g_ThrowInfo[MAXPLAYERS + 1];
-int g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
+int g_refLastGrenade = INVALID_ENT_REFERENCE;
 
 int g_iSkyJumpTick[MAXPLAYERS + 1];
 int g_iFlashHitTick[MAXPLAYERS + 1];
@@ -200,7 +199,7 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
         return Plugin_Continue;
     }
 
-    g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
+    g_refLastGrenade = INVALID_ENT_REFERENCE;
 
     if (g_ThrowInfo[client].m_iTicks != _MEWSTATS_TICK_UNKNOWN) // in the process of throwing
     {
@@ -677,14 +676,17 @@ public void OnEntityCreated(int entity, const char[] szClassname)
     }
     if (StrEqual(szClassname, MEWSTATS_CLASSNAME_PROJECTILE_FLASHBANG))
     {
-        g_entLastGrenade = entity;
+        if (g_refLastGrenade == INVALID_ENT_REFERENCE)
+            g_refLastGrenade = EntIndexToEntRef(entity);
         return;
     }
 }
 
 static void Hook_PostThinkPost(int thrower)
 {
-    if (g_entLastGrenade == _MEWSTATS_INVALID_ENTITY) return;
+    if (g_refLastGrenade == INVALID_ENT_REFERENCE) return;
+
+    int flashIndex = EntRefToEntIndex(g_refLastGrenade);
 
     g_ThrowInfo[thrower].m_iFlags = GetEntProp(thrower, Prop_Data, MEWSTATS_PROP_M_FFLAGS);
 
@@ -702,8 +704,8 @@ static void Hook_PostThinkPost(int thrower)
         if (!Mewstats_IsAliveClientInGame(partner))
         {
             float flashVel[3], flashPos[3], partnerPos[3], flashToPartner[3];
-            GetEntPropVector(g_entLastGrenade, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, flashPos);
-            GetEntPropVector(g_entLastGrenade, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, flashVel);
+            GetEntPropVector(flashIndex, Prop_Data, MEWSTATS_PROP_M_VECORIGIN, flashPos);
+            GetEntPropVector(flashIndex, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, flashVel);
 
             GetClientAbsOrigin(partner, partnerPos);
             SubtractVectors(partnerPos, flashPos, flashToPartner);
@@ -723,8 +725,6 @@ static void Hook_PostThinkPost(int thrower)
         g_ThrowInfo[thrower].m_iTicks = 0; // begin counting
         g_ThrowInfo[thrower].m_bJumpedBeforeSpawned = false;
     }
-
-    g_entLastGrenade = _MEWSTATS_INVALID_ENTITY;
 }
 
 static void Mewstats_PrintThrowStats2(int thrower)
