@@ -233,7 +233,7 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
             GetEntPropVector(client, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, velocity);
 
             velocity[2] = 0.0;
-            float speed = GetVectorLength(velocity, false) + 0.0001;
+            float speed = GetVectorLength(velocity, false);
 
             int index = g_iMlsFlashCount[client] - 1;
             if (index >= _MEWSTATS_MLS_STORE_LIMIT)
@@ -513,7 +513,7 @@ static void Mewstats_ProcessMls(int client, int entity)
     GetEntPropVector(client, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY, clientVelocity);
 
     clientVelocity[2] = 0.0;
-    float clientSpeed = GetVectorLength(clientVelocity, false) + 0.0001;
+    float clientSpeed = GetVectorLength(clientVelocity, false);
 
     Mewstats_InsertMlsFloat(client, g_fMlsPreHitSpeed, g_iMlsFlashCount[client] - 1, clientSpeed);
 
@@ -688,7 +688,7 @@ static void Hook_PostThinkPost(int thrower)
 
     float vec[3];
     GetEntPropVector(thrower, Prop_Data, MEWSTATS_PROP_M_VECABSVELOCITY,  vec);
-    g_ThrowInfo[thrower].m_fVel = SquareRoot(vec[0]*vec[0] + vec[1]*vec[1]) + 0.0001;
+    g_ThrowInfo[thrower].m_fVel = SquareRoot(vec[0]*vec[0] + vec[1]*vec[1]);
 
     GetClientEyeAngles(thrower, vec);
     g_ThrowInfo[thrower].m_fPitch = -vec[0];
